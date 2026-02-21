@@ -12,12 +12,22 @@ interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
   noRetry?: boolean;
 }
 
-const baseURL = window.electron
-  ? `http://127.0.0.1:${setData?.musicApiPort}`
-  : import.meta.env.VITE_API;
+/**
+ * 修改点 1: 优化初始 baseURL 获取逻辑
+ * 确保在 Web 环境（!window.electron）下，优先读取 VITE_API 环境变量
+ * 如果环境变量也缺失，则指向你的公网 API 地址
+ */
+const getBaseURL = () => {
+  if (window.electron) {
+    // Electron 环境下，如果 setData 还没加载，暂时给个占位，拦截器里会重新修正
+    return `http://127.0.0.1:${setData?.musicApiPort || 6077}`;
+  }
+  // Web 环境：强制使用环境变量或公网地址
+  return import.meta.env.VITE_API || 'https://music.yinying.de5.net';
+};
 
 const request = axios.create({
-  baseURL,
+  baseURL: getBaseURL(),
   timeout: 15000,
   withCredentials: true
 });
@@ -31,9 +41,18 @@ const RETRY_DELAY = 500;
 request.interceptors.request.use(
   (config: CustomAxiosRequestConfig) => {
     setData = getSetData();
-    config.baseURL = window.electron
-      ? `http://127.0.0.1:${setData?.musicApiPort}`
-      : import.meta.env.VITE_API;
+
+    /**
+     * 修改点 2: 修正拦截器中的 baseURL 覆盖逻辑
+     * 之前代码在这里可能因为判断不严谨导致在 Web 端也使用了本地 IP
+     */
+    if (window.electron && setData?.musicApiPort) {
+      config.baseURL = `http://127.0.0.1:${setData.musicApiPort}`;
+    } else {
+      // 在浏览器 Web 端运行，强制使用公网地址，不走 127.0.0.1
+      config.baseURL = import.meta.env.VITE_API || 'https://music.yinying.de5.net';
+    }
+
     // 只在retryCount未定义时初始化为0
     if (config.retryCount === undefined) {
       config.retryCount = 0;
@@ -46,18 +65,11 @@ request.interceptors.request.use(
       timestamp: Date.now(),
       device: isElectron ? 'pc' : isMobile ? 'mobile' : 'web'
     };
-    const token = localStorage.getItem('token');
-    if (token && config.method !== 'post') {
-      config.params.cookie = config.params.cookie !== undefined ? config.params.cookie : token;
-    } else if (token && config.method === 'post') {
-      config.data = {
-        ...config.data,
-        cookie: token
-      };
-    }
-    if (isElectron) {
-      const proxyConfig = setData?.proxyConfig;
-      if (proxyConfig?.enable && ['http', 'https'].includes(proxyConfig?.protocol)) {
+
+    // 配置代理
+    if (window.electron && setData) {
+      const proxyConfig = setData.proxyConfig;
+      if (proxyConfig && proxyConfig.enable && ['http', 'https'].includes(proxyConfig?.protocol)) {
         config.params.proxy = `${proxyConfig.protocol}://${proxyConfig.host}:${proxyConfig.port}`;
       }
       if (setData.enableRealIP && setData.realIP) {
@@ -106,16 +118,11 @@ request.interceptors.response.use(
       !config.noRetry
     ) {
       config.retryCount++;
-      console.error(`请求重试第 ${config.retryCount} 次`);
-
-      // 延迟重试
+      console.log(`请求失败，正在进行第 ${config.retryCount} 次重试...`);
       await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
-
-      // 重新发起请求
       return request(config);
     }
 
-    console.error(`重试${MAX_RETRIES}次后仍然失败`);
     return Promise.reject(error);
   }
 );
