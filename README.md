@@ -3,3 +3,4 @@
 
 .env.production 添加api
 
+npx electron-vite build --filter renderer --mode production
